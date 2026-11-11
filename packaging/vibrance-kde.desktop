@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=vibrance-kde
+GenericName=Digital Vibrance
+GenericName[pt_BR]=Vibrance digital
+Comment=Automatically raises color saturation when a game is focused (KDE Plasma 6, Wayland)
+Comment[pt_BR]=Aumenta a saturação das cores automaticamente quando um jogo está em foco
+Exec=vibrance-kde
+Icon=vibrance-kde
+Terminal=false
+Categories=Utility;Settings;
+Keywords=vibrance;saturation;saturação;cores;jogos;games;
+StartupWMClass=vibrance-kde

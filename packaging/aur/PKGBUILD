@@ -1,0 +1,56 @@
+# Maintainer: Kassio Borges <kassiobruno@users.noreply.github.com>
+#
+# Modelo versionado no repositório. A release publica uma cópia com o sha256 do
+# tarball da tag já preenchido (PKGBUILD e .SRCINFO como arquivos da release).
+
+pkgname=vibrance-kde
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Automatic per-game digital vibrance (saturation) for KDE Plasma 6 on Wayland'
+arch=('x86_64')
+url='https://github.com/kassiobruno/vibrancekde'
+license=('GPL-3.0-only')
+# kwin: o script de foco roda dentro do KWin; libkscreen: fornece o kscreen-doctor.
+# wayland, libxkbcommon, mesa: carregados em tempo de execução pela janela de configurações.
+depends=('gcc-libs' 'glibc' 'kwin' 'libkscreen' 'wayland' 'libxkbcommon' 'mesa' 'hicolor-icon-theme')
+makedepends=('cargo')
+options=('!lto')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_srcdir() { echo "$srcdir/vibrancekde-$pkgver"; }
+
+prepare() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$(_srcdir)"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$(_srcdir)"
+  install -Dm755 target/release/vibrance-kde "$pkgdir/usr/bin/vibrance-kde"
+  install -Dm644 packaging/vibrance-kde.desktop "$pkgdir/usr/share/applications/vibrance-kde.desktop"
+  install -Dm644 assets/icons/vibrance-kde.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/vibrance-kde.svg"
+  for name in vibrance-kde-symbolic vibrance-kde-active-symbolic vibrance-kde-disabled-symbolic; do
+    install -Dm644 "assets/icons/$name.svg" \
+      "$pkgdir/usr/share/icons/hicolor/scalable/status/$name.svg"
+  done
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY_NOTICES.md"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""kscreen-doctor falso e com estado, para os testes de integração.
+
+Reproduz o que o vibrance-kde usa do kscreen-doctor real:
+  -j                         JSON (formato de libkscreen/configserializer.cpp)
+  -o                         texto com cores ANSI (formato de doctor.cpp)
+  output.<nome>.iccprofile.<caminho>
+  output.<nome>.colorProfileSource.<sRGB|ICC|EDID>
+  output.<nome>.colorPowerTradeoff.<preferEfficiency|preferAccuracy>
+  output.<nome>.mode.<id ou LxA@Hz>
+
+A divisão por '.' e a reconstrução do caminho do iccprofile imitam o doctor.cpp.
+O estado fica em $FAKE_KSCREEN_DIR/state.json e cada chamada em calls.log.
+"""
+import json
+import os
+import sys
+
+D = os.environ.get("FAKE_KSCREEN_DIR", "/tmp/vk-fake")
+STATE = os.path.join(D, "state.json")
+LOG = os.path.join(D, "calls.log")
+
+
+def default_state():
+    def modes():
+        return [
+            {"id": "1", "name": "2560x1440@144", "size": {"width": 2560, "height": 1440}, "refreshRate": 143.912},
+            {"id": "2", "name": "1920x1080@144", "size": {"width": 1920, "height": 1080}, "refreshRate": 144.0},
+            {"id": "3", "name": "1920x1080@60", "size": {"width": 1920, "height": 1080}, "refreshRate": 60.0},
+        ]
+
+    def out(i, name, prio):
+        return {"id": i, "name": name, "enabled": True, "connected": True, "priority": prio,
+                "currentModeId": "1", "modes": modes(), "iccProfilePath": "",
+                "source": "sRGB", "power": "prefer efficiency and performance"}
+
+    return {"outputs": [out(1, "DP-1", 1), out(2, "HDMI-A-1", 2)]}
+
+
+def load():
+    os.makedirs(D, exist_ok=True)
+    if not os.path.exists(STATE):
+        save(default_state())
+    with open(STATE) as f:
+        return json.load(f)
+
+
+def save(st):
+    with open(STATE, "w") as f:
+        json.dump(st, f)
+
+
+def main():
+    args = sys.argv[1:]
+    with open(LOG, "a") as f:
+        f.write(" ".join(args) + "\n")
+    st = load()
+    if args == ["-j"]:
+        outs = []
+        for o in st["outputs"]:
+            j = {k: o[k] for k in ("id", "name", "enabled", "connected", "priority", "currentModeId", "modes")}
+            j["iccProfilePath"] = o["iccProfilePath"]
+            outs.append(j)
+        print(json.dumps({"outputs": outs}))
+        return 0
+    if args == ["-o"]:
+        for o in st["outputs"]:
+            print(f"\033[01;32mOutput: \033[0;0m{o['id']} {o['name']} enabled connected priority {o['priority']} DisplayPort")
+            icc = o["iccProfilePath"] or "none"
+            print(f"\t\033[01;33mICC profile: \033[0;0m{icc}")
+            print(f"\t\033[01;33mColor profile source: \033[0;0m{o['source']}")
+            print(f"\t\033[01;33mColor power preference: \033[0;0m{o['power']}")
+        return 0
+
+    for a in args:
+        ops = a.split(".")
+        if len(ops) < 3 or ops[0] != "output":
+            print(f"argumento inválido: {a}", file=sys.stderr)
+            return 3
+        o = next((x for x in st["outputs"] if x["name"] == ops[1]), None)
+        if o is None:
+            print(f"monitor não encontrado: {ops[1]}", file=sys.stderr)
+            return 4
+        sub = ops[2]
+        if sub == "iccprofile" and len(ops) >= 4:
+            path = ops[3]
+            for extra in ops[4:]:
+                path += "." + extra
+            if not os.path.isfile(path):
+                print(f"perfil inexistente: {path}", file=sys.stderr)
+                return 5
+            with open(path, "rb") as pf:
+                head = pf.read(40)
+            if head[36:40] != b"acsp":
+                print("não é um perfil ICC", file=sys.stderr)
+                return 5
+            o["iccProfilePath"] = path
+        elif sub == "colorProfileSource" and len(ops) >= 4:
+            if ops[3] not in ("sRGB", "ICC", "EDID"):
+                return 6
+            o["source"] = ops[3]
+        elif sub == "colorPowerTradeoff" and len(ops) >= 4:
+            if ops[3] == "preferEfficiency":
+                o["power"] = "prefer efficiency and performance"
+            elif ops[3] == "preferAccuracy":
+                o["power"] = "prefer accuracy"
+            else:
+                return 7
+        elif sub == "mode" and len(ops) == 4:
+            q = ops[3]
+            m = next((m for m in o["modes"]
+                      if m["id"] == q or f"{m['size']['width']}x{m['size']['height']}@{round(m['refreshRate'])}" == q), None)
+            if m is None:
+                print(f"Output mode {q} not found.")
+                return 9
+            o["currentModeId"] = m["id"]
+        else:
+            print(f"subcomando desconhecido: {a}", file=sys.stderr)
+            return 8
+    save(st)
+    return 0
+
+
+sys.exit(main())

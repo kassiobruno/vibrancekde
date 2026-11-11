@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependências do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev \
+            dbus dbus-user-session libglib2.0-bin python3
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Testes unitários
+        run: cargo test --locked
+
+      - name: Build (debug) e exemplos
+        run: |
+          cargo build --locked
+          cargo build --locked --examples
+
+      - name: Teste de ponta a ponta (D-Bus real, KWin e kscreen-doctor falsos)
+        run: dbus-run-session -- python3 tests/e2e.py
+
+  appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependências do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev \
+            librsvg2-bin desktop-file-utils shellcheck
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validar atalho do menu e scripts
+        run: |
+          desktop-file-validate packaging/vibrance-kde.desktop
+          shellcheck install.sh uninstall.sh packaging/appimage/build-appimage.sh
+
+      - name: Build de release e AppImage
+        run: |
+          cargo build --locked --release
+          VERSION=ci ARCH=x86_64 sh packaging/appimage/build-appimage.sh
+
+      - name: Teste de fumaça do AppImage
+        run: |
+          f=target/vibrance-kde-ci-x86_64.AppImage
+          "$f" --appimage-extract-and-run --version
+
+      - name: O AppImage contém o necessário
+        run: |
+          f=target/vibrance-kde-ci-x86_64.AppImage
+          "$f" --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/bin/vibrance-kde
+          test -f squashfs-root/vibrance-kde.desktop
+          test -f squashfs-root/vibrance-kde.svg
+          test -f squashfs-root/.DirIcon
+
+  aur:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Dependências
+        run: pacman -Syu --noconfirm --needed git cargo sudo
+
+      - uses: actions/checkout@v4
+
+      - name: PKGBUILD usando o código do commit (sem tag)
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          mkdir -p out
+          git archive --format=tar.gz --prefix="vibrancekde-$ver/" HEAD -o "out/vibrance-kde-$ver.tar.gz"
+          cp packaging/aur/PKGBUILD out/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=$ver/; s|^source=.*|source=(\"\$pkgname-\$pkgver.tar.gz\")|; s/^sha256sums=.*/sha256sums=('SKIP')/" out/PKGBUILD
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder out
+
+      - name: makepkg (compila, roda os testes e empacota)
+        run: su builder -c 'cd out && makepkg -sf --noconfirm'
+
+      - name: Conteúdo e execução do pacote
+        run: |
+          pacman -Qlp out/*.pkg.tar.zst
+          pacman -U --noconfirm out/*.pkg.tar.zst
+          vibrance-kde --version
+          test -f /usr/share/applications/vibrance-kde.desktop
+          test -f /usr/share/icons/hicolor/scalable/apps/vibrance-kde.svg
+          test -f /usr/share/icons/hicolor/scalable/status/vibrance-kde-symbolic.svg
+          test -f /usr/share/licenses/vibrance-kde/LICENSE

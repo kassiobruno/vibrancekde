@@ -1,0 +1,170 @@
+name: Release
+
+# Dispara ao empurrar uma tag `vX.Y.Z`. Gera o AppImage, valida e publica o
+# PKGBUILD do AUR e cria a release no GitHub com todos os arquivos.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04 # glibc antiga => o AppImage roda em distros mais novas
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versão da tag confere com o Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "$tag" != "$crate" ]; then
+            echo "A tag ($tag) difere da versão do Cargo.toml ($crate)"; exit 1
+          fi
+
+      - name: Dependências do sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libx11-dev \
+            dbus dbus-user-session libglib2.0-bin python3 librsvg2-bin desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Testes unitários e de ponta a ponta
+        run: |
+          cargo test --locked
+          cargo build --locked
+          cargo build --locked --examples
+          dbus-run-session -- python3 tests/e2e.py
+
+      - name: Build de release
+        run: cargo build --locked --release
+
+      - name: Validar o atalho do menu
+        run: desktop-file-validate packaging/vibrance-kde.desktop
+
+      - name: Gerar o AppImage
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}" ARCH=x86_64 sh packaging/appimage/build-appimage.sh
+          ls -la target/*.AppImage
+
+      - name: Teste de fumaça do AppImage
+        run: |
+          f=$(ls target/vibrance-kde-*.AppImage)
+          "$f" --appimage-extract-and-run --version 2>/dev/null || "$f" --version
+
+      - name: Pacotes e somas de verificação
+        run: |
+          mkdir -p dist
+          cp target/vibrance-kde-*.AppImage dist/
+          tar -C target/release -czf "dist/vibrance-kde-${GITHUB_REF_NAME#v}-x86_64-linux.tar.gz" vibrance-kde
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+          if-no-files-found: error
+
+  aur:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Dependências
+        run: pacman -Syu --noconfirm --needed git cargo sudo curl
+
+      - uses: actions/checkout@v4
+
+      - name: PKGBUILD com sha256 do tarball da tag
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          cp packaging/aur/PKGBUILD out/PKGBUILD
+          curl -fsSL -o "out/vibrance-kde-$ver.tar.gz" \
+            "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sum=$(sha256sum "out/vibrance-kde-$ver.tar.gz" | cut -d' ' -f1)
+          sed -i "s/^pkgver=.*/pkgver=$ver/; s/^sha256sums=.*/sha256sums=('$sum')/" out/PKGBUILD
+          cat out/PKGBUILD
+
+      - name: Construir o pacote com makepkg (valida o PKGBUILD)
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder out
+          su builder -c 'cd out && makepkg -sf --noconfirm'
+          ls -la out/*.pkg.tar.*
+
+      - name: Gerar .SRCINFO e listar o conteúdo do pacote
+        run: |
+          su builder -c 'cd out && makepkg --printsrcinfo > .SRCINFO'
+          cat out/.SRCINFO
+          pacman -Qlp out/*.pkg.tar.zst
+
+      - name: Instalar e executar o pacote
+        run: |
+          pacman -U --noconfirm out/*.pkg.tar.zst
+          vibrance-kde --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aur
+          path: |
+            out/PKGBUILD
+            out/.SRCINFO
+            out/*.pkg.tar.zst
+          include-hidden-files: true
+          if-no-files-found: error
+
+  release:
+    needs: [appimage, aur]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: aur
+          path: aur
+
+      - name: Montar a lista de arquivos
+        run: |
+          mkdir -p files
+          cp dist/* files/
+          cp aur/PKGBUILD files/PKGBUILD
+          cp aur/.SRCINFO files/SRCINFO
+          cp aur/*.pkg.tar.zst files/
+          (cd files && sha256sum * > SHA256SUMS)
+          ls -la files
+
+      - name: Publicar a release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: files/*
+          generate_release_notes: true
+          body: |
+            Vibrance (saturação) automático por jogo para **KDE Plasma 6 em Wayland**.
+
+            ### Instalação
+            - **AppImage** (qualquer distro x86_64): baixe `vibrance-kde-*-x86_64.AppImage`, `chmod +x` e execute.
+              Requer `kscreen-doctor` (pacote `libkscreen`) no sistema.
+            - **Arch Linux**: o pacote `vibrance-kde` (PKGBUILD anexado, validado com `makepkg` no CI).
+              Também há o pacote já compilado `*.pkg.tar.zst` anexado.
+            - **Binário solto**: `vibrance-kde-*-linux.tar.gz`.
+
+            Confira os arquivos com `sha256sum -c SHA256SUMS`.
+
+            ### Aviso
+            Primeira versão. A lógica foi testada com D-Bus real e um KWin/`kscreen-doctor`
+            simulados, mas a aplicação visual do perfil de cor por um Plasma real ainda precisa
+            ser confirmada em hardware. Relate problemas nas issues, com a saída de
+            `RUST_LOG=debug vibrance-kde --minimized`.
