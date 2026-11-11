@@ -65,8 +65,7 @@ jobs:
           mkdir -p dist
           cp target/vibrance-kde-*.AppImage dist/
           tar -C target/release -czf "dist/vibrance-kde-${GITHUB_REF_NAME#v}-x86_64-linux.tar.gz" vibrance-kde
-          (cd dist && sha256sum * > SHA256SUMS)
-          cat dist/SHA256SUMS
+          (cd dist && sha256sum -- *)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -146,8 +145,13 @@ jobs:
           for pkg in aur/*.pkg.tar.zst; do
             case "$pkg" in *-debug-*) ;; *) cp "$pkg" files/ ;; esac
           done
-          # lista os arquivos por nome, sem incluir o próprio SHA256SUMS
-          (cd files && sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS SHA256SUMS)
+          # a lista é calculada sem nenhum SHA256SUMS anterior e fora da pasta,
+          # para que ela não contenha a si mesma
+          rm -f files/SHA256SUMS
+          (cd files && sha256sum -- *) > SHA256SUMS.tmp
+          mv SHA256SUMS.tmp files/SHA256SUMS
+          # confere a própria lista antes de publicar
+          (cd files && sha256sum -c SHA256SUMS)
           ls -la files
 
       - name: Publicar a release
