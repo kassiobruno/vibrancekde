@@ -102,6 +102,9 @@ struct App {
     rt: tokio::runtime::Runtime,
     /// Mantém o nome D-Bus da instância única enquanto a janela existir.
     _single_instance: Option<zbus::Connection>,
+    /// Modo de demonstração das capturas de tela (dados de exemplo, nada é salvo).
+    #[cfg(feature = "screenshots")]
+    demo: Option<demo::Script>,
 }
 
 impl App {
@@ -127,6 +130,8 @@ impl App {
             msg_rx,
             rt,
             _single_instance: single,
+            #[cfg(feature = "screenshots")]
+            demo: None,
         };
         app.refresh_outputs();
         app
@@ -220,6 +225,7 @@ impl App {
 
     fn general(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.label(RichText::new("Vibrance").strong());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -266,6 +272,7 @@ impl App {
 
     fn programs(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.label(RichText::new("Programas").strong());
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -346,6 +353,7 @@ impl App {
             return;
         }
         ui.group(|ui| {
+            ui.set_width(ui.available_width());
             ui.label(RichText::new("Monitores").strong());
             for o in &st.outputs {
                 ui.label(format!(
@@ -525,6 +533,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_messages();
+        #[cfg(feature = "screenshots")]
+        demo::step(self, &ctx);
         if let Some((_, t, _)) = &self.toast {
             if t.elapsed() > Duration::from_secs(6) {
                 self.toast = None;
@@ -604,6 +614,205 @@ pub fn run() -> Result<()> {
         "vibrance-kde",
         options,
         Box::new(move |cc| Ok(Box::new(App::new(&cc.egui_ctx, single, rt)))),
+    )
+    .map_err(|e| anyhow::anyhow!("falha na interface gráfica: {e}"))
+}
+
+#[cfg(feature = "screenshots")]
+mod demo {
+    //! Gera as imagens do README: `cargo run --features screenshots -- screenshots <pasta>`.
+    //! Usa dados de exemplo; nunca lê nem grava a configuração real.
+
+    use super::*;
+    use crate::engine::OutputStatus;
+    use crate::kscreen::{ColorState, ModeInfo};
+    use std::sync::{Arc, Mutex};
+
+    pub struct Script {
+        dir: std::path::PathBuf,
+        frame: u32,
+        stage: usize,
+        shot: Arc<Mutex<Option<Arc<egui::ColorImage>>>>,
+        waiting: bool,
+    }
+
+    const STAGES: [&str; 3] = ["main", "windows", "editor"];
+
+    fn sample_outputs() -> Vec<OutputInfo> {
+        let modes = [(2560, 1440, 144.0), (1920, 1080, 144.0), (1920, 1080, 60.0), (3840, 2160, 60.0)]
+            .iter()
+            .enumerate()
+            .map(|(i, &(w, h, r))| ModeInfo { id: (i + 1).to_string(), width: w, height: h, refresh: r })
+            .collect::<Vec<_>>();
+        vec![OutputInfo {
+            name: "DP-1".into(),
+            primary: true,
+            current_mode_id: "1".into(),
+            modes,
+            color: ColorState::neutral(),
+            color_capable: true,
+            stale_profile: false,
+        }]
+    }
+
+    fn profile(name: &str, process: &str, level: u8, res: Option<(u32, u32, u32)>) -> AppProfile {
+        AppProfile {
+            name: name.into(),
+            process: process.into(),
+            level,
+            change_resolution: res.is_some(),
+            resolution: res.map(|(width, height, refresh)| Resolution { width, height, refresh }),
+        }
+    }
+
+    pub fn app(ctx: &egui::Context, dir: std::path::PathBuf, rt: tokio::runtime::Runtime) -> App {
+        let (cmd_tx, _cmd_rx) = tmpsc::unbounded_channel();
+        let (_msg_tx, msg_rx) = mpsc::channel();
+        let cfg = Config {
+            enabled: true,
+            windows_level: 55,
+            affect_primary_only: false,
+            never_switch_resolution: false,
+            apps: vec![
+                profile("Counter-Strike 2", "cs2", 80, None),
+                profile("Apex Legends", "r5apex_dx12", 70, None),
+                profile("Elden Ring", "eldenring", 65, Some((1920, 1080, 144))),
+                profile("Valorant", "VALORANT-Win64-Shipping", 85, None),
+            ],
+        };
+        let status = Status {
+            enabled: true,
+            kwin_connected: true,
+            active_app: Some("Counter-Strike 2".into()),
+            active_level: 80,
+            windows_level: 55,
+            outputs: vec![OutputStatus { name: "DP-1".into(), level: 80, primary: true }],
+            error: None,
+        };
+        // sem animações: a captura não pode pegar janelas ainda surgindo
+        ctx.all_styles_mut(|st| st.animation_time = 0.0);
+        App {
+            cfg,
+            status: Some(status),
+            autostart: true,
+            outputs: sample_outputs(),
+            selected: Some(0),
+            editor: None,
+            explorer: None,
+            manual_new: false,
+            toast: None,
+            cmd_tx,
+            msg_rx,
+            rt,
+            _single_instance: None,
+            demo: Some(Script {
+                dir,
+                frame: 0,
+                stage: 0,
+                shot: Arc::new(Mutex::new(None)),
+                waiting: false,
+            }),
+        }
+    }
+
+    fn windows() -> Vec<WindowInfo> {
+        let w = |caption: &str, class: &str| WindowInfo {
+            pid: 0,
+            class: class.into(),
+            name: class.into(),
+            caption: caption.into(),
+            output: "DP-1".into(),
+            fullscreen: false,
+        };
+        vec![
+            w("Counter-Strike 2", "cs2"),
+            w("Mozilla Firefox", "firefox"),
+            w("Dolphin", "dolphin"),
+            w("Konsole", "konsole"),
+            w("Steam", "steam"),
+        ]
+    }
+
+    /// Avança o roteiro: prepara a tela, espera alguns quadros, fotografa e passa à próxima.
+    pub fn step(app: &mut App, ctx: &egui::Context) {
+        let Some(mut sc) = app.demo.take() else { return };
+        if sc.stage >= STAGES.len() {
+            app.demo = Some(sc);
+            return;
+        }
+        sc.frame += 1;
+        ctx.request_repaint();
+
+        if sc.waiting {
+            let img = sc.shot.lock().unwrap().take();
+            if let Some(img) = img {
+                let name = format!("{:02}-{}.png", sc.stage + 1, STAGES[sc.stage]);
+                let [w, h] = img.size;
+                let raw: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Some(buf) = image::RgbaImage::from_raw(w as u32, h as u32, raw) {
+                    let path = sc.dir.join(&name);
+                    match buf.save(&path) {
+                        Ok(()) => println!("salvo: {} ({w}x{h})", path.display()),
+                        Err(e) => eprintln!("erro ao salvar {name}: {e}"),
+                    }
+                }
+                sc.waiting = false;
+                sc.stage += 1;
+                sc.frame = 0;
+                if sc.stage >= STAGES.len() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    app.demo = Some(sc);
+                    return;
+                }
+            }
+            app.demo = Some(sc);
+            return;
+        }
+
+        // prepara a tela do estágio atual no primeiro quadro
+        if sc.frame == 1 {
+            app.explorer = None;
+            app.editor = None;
+            match STAGES[sc.stage] {
+                "windows" => {
+                    app.explorer = Some(Explorer { windows: windows(), loaded: true });
+                }
+                "editor" => {
+                    let p = app.cfg.apps[2].clone();
+                    app.editor = Some(Editor { index: Some(2), last_preview: p.level, profile: p });
+                }
+                _ => {}
+            }
+        }
+        // deixa o layout assentar antes de fotografar
+        if sc.frame == 20 {
+            let slot = sc.shot.clone();
+            ctx.request_screenshot(move |img| {
+                *slot.lock().unwrap() = Some(img);
+            });
+            sc.waiting = true;
+        }
+        app.demo = Some(sc);
+    }
+}
+
+/// Gera as capturas de tela do README em `dir` (uso de desenvolvimento).
+#[cfg(feature = "screenshots")]
+pub fn run_screenshots(dir: &str) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let dir = std::path::PathBuf::from(dir);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("vibrance-kde")
+            .with_app_id(assets::APP_ID)
+            .with_inner_size([640.0, 540.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "vibrance-kde",
+        options,
+        Box::new(move |cc| Ok(Box::new(demo::app(&cc.egui_ctx, dir, rt)))),
     )
     .map_err(|e| anyhow::anyhow!("falha na interface gráfica: {e}"))
 }

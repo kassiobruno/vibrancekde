@@ -2847,6 +2847,7 @@ dependencies = [
  "eframe",
  "env_logger",
  "futures-util",
+ "image",
  "ksni",
  "log",
  "serde",

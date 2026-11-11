@@ -12,6 +12,7 @@ dirs = "7.0.0"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "default_fonts"] }
 env_logger = "0.11.11"
 futures-util = "0.3.34"
+image = { version = "0.25.10", default-features = false, features = ["png"], optional = true }
 ksni = "0.3.7"
 log = "0.4.35"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -25,3 +26,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[features]
+# Modo de demonstração que gera as capturas de tela do README (fora do release).
+screenshots = ["dep:image"]

@@ -1,4 +1,8 @@
-# vibrance-kde
+<p align="center">
+  <img src="assets/icons/vibrance-kde.svg" alt="Ícone do vibrance-kde" width="96">
+</p>
+
+<h1 align="center">vibrance-kde</h1>
 
 Vibrance (saturação) automático por jogo para **KDE Plasma 6 em Wayland**, no estilo do
 vibranceGUI do Windows. Quando a janela de um jogo cadastrado ganha o foco, a saturação do
@@ -6,6 +10,36 @@ monitor sobe. Quando você sai dela, volta ao normal.
 
 Feito em Rust, com um processo residente leve (bandeja do sistema, sem interface gráfica carregada)
 e uma janela de configurações que só existe quando você a abre.
+
+## Capturas de tela
+
+<p align="center">
+  <img src="docs/screenshots/01-main.png" alt="Janela principal do vibrance-kde" width="640">
+</p>
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/02-windows.png" alt="Escolha do jogo entre as janelas abertas"><br>
+      <sub>Escolha do jogo entre as janelas abertas</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/screenshots/03-editor.png" alt="Editor de programa com nível de vibrance e troca de resolução"><br>
+      <sub>Nível por jogo, com pré-visualização ao vivo, e troca de resolução</sub>
+    </td>
+  </tr>
+</table>
+
+Ícones da bandeja do sistema, monocromáticos (o Plasma os recolore conforme o tema):
+
+<p align="center">
+  <img src="docs/tray-icons.svg" alt="Ícones da bandeja nos estados ligado, jogo em foco e desligado, em tema claro e escuro" width="560">
+</p>
+
+> As capturas da janela são geradas pelo próprio programa, com **dados de exemplo** (jogos e
+> monitor fictícios), e não de uma sessão Plasma real. A interface é desenhada pelo egui, então o
+> conteúdo é o mesmo no Plasma; só a moldura da janela vem do KWin. Para gerá-las de novo:
+> `cargo run --features screenshots -- screenshots docs/screenshots`.
 
 ## Como funciona
 

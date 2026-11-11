@@ -118,6 +118,8 @@ fn main() -> Result<()> {
         [] => runtime()?.block_on(daemon::run(true)),
         ["--minimized"] | ["-m"] | ["daemon"] => runtime()?.block_on(daemon::run(false)),
         ["gui"] => gui::run(),
+        #[cfg(feature = "screenshots")]
+        ["screenshots", dir] => gui::run_screenshots(dir),
         ["status"] => runtime()?.block_on(cmd_status()),
         ["list-outputs"] => runtime()?.block_on(cmd_list()),
         ["set", output, level] => runtime()?.block_on(cmd_set(output, parse_level(level)?)),
