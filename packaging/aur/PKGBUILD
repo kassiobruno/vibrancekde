@@ -14,7 +14,7 @@ license=('GPL-3.0-only')
 # wayland, libxkbcommon, mesa: carregados em tempo de execução pela janela de configurações.
 depends=('gcc-libs' 'glibc' 'kwin' 'libkscreen' 'wayland' 'libxkbcommon' 'mesa' 'hicolor-icon-theme')
 makedepends=('cargo')
-options=('!lto')
+options=('!lto' '!debug')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

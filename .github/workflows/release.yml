@@ -142,8 +142,12 @@ jobs:
           cp dist/* files/
           cp aur/PKGBUILD files/PKGBUILD
           cp aur/.SRCINFO files/SRCINFO
-          cp aur/*.pkg.tar.zst files/
-          (cd files && sha256sum * > SHA256SUMS)
+          # o pacote -debug (símbolos) não interessa ao usuário final
+          for pkg in aur/*.pkg.tar.zst; do
+            case "$pkg" in *-debug-*) ;; *) cp "$pkg" files/ ;; esac
+          done
+          # lista os arquivos por nome, sem incluir o próprio SHA256SUMS
+          (cd files && sha256sum -- * > ../SHA256SUMS && mv ../SHA256SUMS SHA256SUMS)
           ls -la files
 
       - name: Publicar a release
