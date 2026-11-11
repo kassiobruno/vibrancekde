@@ -168,7 +168,9 @@ jobs:
             Confira os arquivos com `sha256sum -c SHA256SUMS`.
 
             ### Aviso
-            Primeira versão. A lógica foi testada com D-Bus real e um KWin/`kscreen-doctor`
-            simulados, mas a aplicação visual do perfil de cor por um Plasma real ainda precisa
+            A lógica foi testada em Linux com D-Bus real e um KWin/`kscreen-doctor` simulados
+            (veja o CI), mas a aplicação visual do perfil de cor por um Plasma real ainda precisa
             ser confirmada em hardware. Relate problemas nas issues, com a saída de
             `RUST_LOG=debug vibrance-kde --minimized`.
+
+            As mudanças desta versão estão no [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
