@@ -4,7 +4,7 @@
 # tarball da tag já preenchido (PKGBUILD e .SRCINFO como arquivos da release).
 
 pkgname=vibrance-kde
-pkgver=0.1.1
+pkgver=0.1.2
 pkgrel=1
 pkgdesc='Automatic per-game digital vibrance (saturation) for KDE Plasma 6 on Wayland'
 arch=('x86_64')

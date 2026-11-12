@@ -1,6 +1,6 @@
 # Changelog
 
-## Não lançado
+## 0.1.2
 
 - **Correção:** depois de abrir o programa pela primeira vez na sessão ou de reiniciar o PC, o
   jogo abria com a cor padrão (a barra de vibrance só "pegava" depois de ser movida). O KWin
