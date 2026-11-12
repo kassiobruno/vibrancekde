@@ -11,6 +11,7 @@ Uso:  cargo build --examples && cargo build && \
 """
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -67,6 +68,17 @@ def window(cls, output="DP-1", caption=""):
     payload = json.dumps({"pid": 0, "class": cls, "name": cls, "caption": caption,
                           "output": output, "fullscreen": True})
     gdbus("WindowActivated", "'" + payload + "'")
+
+
+def level_of(o):
+    """Nível codificado no nome do perfil: vibrance-kde-<monitor>-<nível>-n<sufixo>.icc"""
+    m = re.match(r"^vibrance-kde-(.+)-(\d+)-n[0-9a-f]+\.icc$", os.path.basename(o["iccProfilePath"]))
+    return int(m.group(2)) if m else None
+
+
+def effective(o):
+    """Saturação realmente ativa no KWin: fonte ICC E perfil carregado em memória."""
+    return o["source"] == "ICC" and o["loaded"] and o["iccProfilePath"] != ""
 
 
 def is_ours(o):
@@ -154,7 +166,8 @@ def main():
         o = state()["DP-1"]
         check(o["source"] == "ICC", "colorProfileSource = ICC")
         check(o["power"] == "prefer accuracy", "colorPowerTradeoff = preferAccuracy (necessário p/ shader ICC do KWin)")
-        check(o["iccProfilePath"].endswith("-80.icc"), "perfil do nível 80% (vibrance-kde-DP-1-80.icc)")
+        check(level_of(o) == 80, "perfil do nível 80%")
+        check(effective(o), "perfil carregado no KWin e fonte ICC (saturação efetiva)")
         check(not is_ours(state()["HDMI-A-1"]), "HDMI-A-1 não é alterado (jogo está em DP-1)")
         with open(o["iccProfilePath"], "rb") as f:
             head = f.read(200)
@@ -180,7 +193,7 @@ def main():
         print("== troca de resolução (jogo em janela)")
         window("windowed", output="DP-1")  # casa com 'Windowed.exe' (ignora .exe e caixa)
         check(wait_for(lambda: state()["DP-1"]["currentModeId"] == "2", 10), "resolução trocada para 1920x1080@144")
-        check(state()["DP-1"]["iccProfilePath"].endswith("-100.icc"), "nível 100% aplicado junto")
+        check(level_of(state()["DP-1"]) == 100, "nível 100% aplicado junto")
         window("firefox")
         check(wait_for(lambda: state()["DP-1"]["currentModeId"] == "1", 10), "resolução original restaurada")
         check(wait_for(lambda: not is_ours(state()["DP-1"]), 10), "cor restaurada")
@@ -213,10 +226,10 @@ def main():
         gdbus("Reload")
         check(wait_for(lambda: is_ours(state()["DP-1"]) and is_ours(state()["HDMI-A-1"]), 10),
               "nível 60% aplicado em todos os monitores")
-        check(state()["DP-1"]["iccProfilePath"].endswith("-60.icc"), "perfil do nível 60%")
+        check(level_of(state()["DP-1"]) == 60, "perfil do nível 60%")
         window("cs2")
-        check(wait_for(lambda: state()["DP-1"]["iccProfilePath"].endswith("-80.icc"), 10), "jogo sobe para 80% em DP-1")
-        check(state()["HDMI-A-1"]["iccProfilePath"].endswith("-60.icc"), "HDMI-A-1 fica em 60%")
+        check(wait_for(lambda: level_of(state()["DP-1"]) == 80, 10), "jogo sobe para 80% em DP-1")
+        check(level_of(state()["HDMI-A-1"]) == 60, "HDMI-A-1 fica em 60%")
 
         print("== desativar o observador")
         gdbus("SetEnabled", "false")
@@ -231,9 +244,43 @@ def main():
         gdbus("Reload")
         wait_for(lambda: not is_ours(state()["DP-1"]), 10)
         gdbus("Preview", "90")
-        check(wait_for(lambda: state()["DP-1"]["iccProfilePath"].endswith("-90.icc"), 10), "preview aplica 90%")
+        check(wait_for(lambda: level_of(state()["DP-1"]) == 90, 10), "preview aplica 90%")
         gdbus("Preview", "int32 -1")
         check(wait_for(lambda: not is_ours(state()["DP-1"]), 10), "fim do preview restaura")
+
+        print("== BUG: reiniciou a sessão e o jogo abre com a cor padrão")
+        window("firefox")
+        write_config(CONFIG)
+        gdbus("Reload")
+        wait_for(lambda: not is_ours(state()["DP-1"]), 10)
+        window("cs2")
+        check(wait_for(lambda: effective(state()["DP-1"]), 10), "1ª vez: vibrance efetivo")
+        first_path = state()["DP-1"]["iccProfilePath"]
+        window("firefox")
+        wait_for(lambda: not is_ours(state()["DP-1"]), 10)
+        window("cs2")
+        check(wait_for(lambda: effective(state()["DP-1"]), 10), "2ª vez na mesma sessão: vibrance efetivo")
+        check(state()["DP-1"]["iccProfilePath"] != first_path,
+              "o caminho do perfil muda a cada aplicação (senão o KWin não recarrega)")
+        window("firefox")
+        wait_for(lambda: not is_ours(state()["DP-1"]), 10)
+        daemon.send_signal(signal.SIGTERM)
+        daemon.wait(timeout=20)
+        # reinício do PC: o KWin tenta recarregar o caminho salvo, mas o arquivo foi apagado
+        # na limpeza, então fica sem perfil carregado (IccProfile::load(...).value_or(nullptr))
+        st = json.load(open(os.path.join(FAKE_DIR, "state.json")))
+        for out in st["outputs"]:
+            out["loaded"] = False
+        json.dump(st, open(os.path.join(FAKE_DIR, "state.json"), "w"))
+        check(state()["DP-1"]["iccProfilePath"] != "", "pré-condição: o KWin guardou o caminho do perfil antigo")
+        daemon = subprocess.Popen([BIN, "--minimized"], env=env, stdout=log, stderr=subprocess.STDOUT)
+        check(wait_for(lambda: gdbus("Status").returncode == 0, 10), "daemon reiniciado")
+        wait_for(lambda: '"kwin_connected":true' in gdbus("Status").stdout.replace(" ", ""), 10)
+        window("cs2")
+        check(wait_for(lambda: effective(state()["DP-1"]), 10),
+              "após reiniciar, o jogo abre com o vibrance já ativo (sem precisar mexer na barra)")
+        window("firefox")
+        wait_for(lambda: not is_ours(state()["DP-1"]), 10)
 
         print("== encerramento limpo restaura os monitores")
         window("cs2")

@@ -284,38 +284,71 @@ pub fn profile_dir() -> PathBuf {
         .join("icc")
 }
 
-pub fn profile_path(output: &str, level: u8) -> PathBuf {
-    profile_dir().join(format!("{PROFILE_PREFIX}{output}-{level}.icc"))
+/// Nome do arquivo de perfil: `vibrance-kde-<monitor>-<nível>-n<sufixo>.icc`.
+///
+/// O sufixo muda a CADA aplicação, de propósito. O `kscreen-doctor` só reenvia o
+/// perfil ao KWin quando o caminho muda, e o KWin só lê o arquivo do disco nesse
+/// momento. Com um caminho fixo por nível, depois de reiniciar a sessão o KWin
+/// guarda o caminho antigo sem ter o perfil carregado (o arquivo já foi apagado),
+/// e a próxima aplicação do mesmo nível não surtiria efeito: cor padrão no jogo.
+pub fn profile_path(output: &str, level: u8, nonce: &str) -> PathBuf {
+    profile_dir().join(format!("{PROFILE_PREFIX}{output}-{level}-n{nonce}.icc"))
 }
 
-/// Gera (se preciso) o perfil do nível e devolve o caminho.
-pub fn ensure_profile(output: &str, level: u8) -> Result<PathBuf> {
-    let path = profile_path(output, level);
-    if !path.exists() {
-        std::fs::create_dir_all(profile_dir()).context("criando diretório de perfis ICC")?;
-        let pct = u32::from(level) - u32::from(LEVEL_NEUTRAL);
-        let desc = format!("vibrance-kde +{}% ({output})", pct * 2);
-        let data = icc::build_profile(&desc, level_to_factor(level));
-        let tmp = path.with_extension("icc.tmp");
-        std::fs::write(&tmp, data).context("escrevendo perfil ICC")?;
-        std::fs::rename(&tmp, &path).context("gravando perfil ICC")?;
-    }
+/// Sufixo único: relógio em nanossegundos + contador (único mesmo em chamadas seguidas).
+fn unique_nonce() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}{:x}", nanos & 0xffff_ffff_ffff, COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Gera um perfil NOVO para o nível (sempre com caminho inédito) e devolve o caminho.
+pub fn create_profile(output: &str, level: u8) -> Result<PathBuf> {
+    let path = profile_path(output, level, &unique_nonce());
+    std::fs::create_dir_all(profile_dir()).context("criando diretório de perfis ICC")?;
+    let pct = u32::from(level) - u32::from(LEVEL_NEUTRAL);
+    let desc = format!("vibrance-kde +{}% ({output})", pct * 2);
+    let data = icc::build_profile(&desc, level_to_factor(level));
+    let tmp = path.with_extension("icc.tmp");
+    std::fs::write(&tmp, data).context("escrevendo perfil ICC")?;
+    std::fs::rename(&tmp, &path).context("gravando perfil ICC")?;
     Ok(path)
 }
 
-/// Remove perfis antigos do monitor, mantendo só `keep` (se houver).
-pub fn cleanup_profiles(output: &str, keep: Option<u8>) {
+/// `true` se `rest` (o que sobra após `vibrance-kde-<monitor>-`) é `<nível>` (formato
+/// antigo, sem sufixo) ou `<nível>-n<sufixo hex>`, sem o `.icc`.
+fn is_profile_tail(rest: &str) -> bool {
+    let (level, nonce) = match rest.split_once('-') {
+        Some((l, n)) => (l, Some(n)),
+        None => (rest, None),
+    };
+    !level.is_empty()
+        && level.bytes().all(|b| b.is_ascii_digit())
+        && nonce.map_or(true, |n| {
+            n.strip_prefix('n')
+                .is_some_and(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
+}
+
+/// Remove os perfis do monitor, mantendo só `keep` (o que o KWin está usando agora).
+pub fn cleanup_profiles(output: &str, keep: Option<&std::path::Path>) {
     let prefix = format!("{PROFILE_PREFIX}{output}-");
-    let keep_name = keep.map(|l| format!("{prefix}{l}.icc"));
     let Ok(rd) = std::fs::read_dir(profile_dir()) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        // `-` separa o nível; evita apagar "DP-1-..." ao limpar "DP-10-..." e vice-versa
         let rest = name.strip_prefix(&prefix).and_then(|r| r.strip_suffix(".icc"));
-        let is_ours = rest.is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()));
-        if is_ours && Some(&name) != keep_name.as_ref() {
-            let _ = std::fs::remove_file(e.path());
+        // exige o formato exato: evita apagar arquivos de outro monitor ("DP-1" x "DP-1-2")
+        if !rest.is_some_and(is_profile_tail) {
+            continue;
         }
+        if keep.is_some_and(|k| k == e.path()) {
+            continue;
+        }
+        let _ = std::fs::remove_file(e.path());
     }
 }
 
@@ -326,19 +359,25 @@ fn power_arg(p: Power) -> &'static str {
     }
 }
 
-/// Argumentos para aplicar `level` num monitor. No nível neutro restaura o estado original.
-pub fn level_args(output: &str, level: u8, original: &ColorState) -> Result<Vec<String>> {
+/// Argumentos para aplicar `level` num monitor, e o perfil criado (se houver).
+/// No nível neutro restaura o estado original e não cria perfil.
+pub fn level_args(
+    output: &str,
+    level: u8,
+    original: &ColorState,
+) -> Result<(Vec<String>, Option<PathBuf>)> {
     if level <= LEVEL_NEUTRAL {
-        return Ok(restore_args(output, original));
+        return Ok((restore_args(output, original), None));
     }
-    let path = ensure_profile(output, level)?;
+    let path = create_profile(output, level)?;
     // O KWin só executa o shader ICC (a tabela 3D) em "preferir precisão"; em
     // "eficiência" ele manda só uma curva 1D ao hardware e ignora a tabela.
-    Ok(vec![
+    let args = vec![
         format!("output.{output}.iccprofile.{}", path.display()),
         format!("output.{output}.colorProfileSource.ICC"),
         format!("output.{output}.colorPowerTradeoff.preferAccuracy"),
-    ])
+    ];
+    Ok((args, Some(path)))
 }
 
 pub fn restore_args(output: &str, original: &ColorState) -> Vec<String> {
@@ -429,7 +468,27 @@ mod tests {
 
     #[test]
     fn neutral_level_restores_instead_of_profile() {
-        let a = level_args("DP-1", 50, &ColorState::neutral()).unwrap();
+        let (a, p) = level_args("DP-1", 50, &ColorState::neutral()).unwrap();
         assert!(a.iter().all(|s| !s.contains("iccprofile")));
+        assert!(p.is_none());
+    }
+
+    #[test]
+    fn profile_names_are_never_reused() {
+        let a = unique_nonce();
+        let b = unique_nonce();
+        assert_ne!(a, b);
+        assert_ne!(profile_path("DP-1", 80, &a), profile_path("DP-1", 80, &b));
+    }
+
+    #[test]
+    fn profile_tail_recognition() {
+        assert!(is_profile_tail("80")); // formato antigo
+        assert!(is_profile_tail("80-n1a2b3c"));
+        assert!(!is_profile_tail("2-80")); // "DP-1-2" nível 80 no formato antigo não é de "DP-1"
+        assert!(!is_profile_tail("2-80-n1a2b"));
+        assert!(!is_profile_tail("80-n"));
+        assert!(!is_profile_tail("80-nxyz"));
+        assert!(!is_profile_tail(""));
     }
 }

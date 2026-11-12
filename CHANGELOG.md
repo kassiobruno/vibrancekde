@@ -1,5 +1,14 @@
 # Changelog
 
+## Não lançado
+
+- **Correção:** depois de abrir o programa pela primeira vez na sessão ou de reiniciar o PC, o
+  jogo abria com a cor padrão (a barra de vibrance só "pegava" depois de ser movida). O KWin
+  guarda o caminho do último perfil ICC, mas perde o perfil em memória no reinício (o arquivo já
+  tinha sido apagado). Como o `kscreen-doctor` só reenvia o perfil quando o caminho muda, o
+  mesmo nível gerava o mesmo caminho e o KWin nunca o carregava. Agora cada aplicação gera um
+  arquivo com nome inédito (`vibrance-kde-<monitor>-<nível>-n<sufixo>.icc`).
+
 ## 0.1.1
 
 - Interface: os blocos "Vibrance", "Programas" e "Monitores" passam a ocupar a largura

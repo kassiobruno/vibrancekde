@@ -58,6 +58,8 @@ struct Touched {
     original: ColorState,
     /// Modo de vídeo a restaurar, se trocamos a resolução.
     saved_mode: Option<String>,
+    /// Arquivo de perfil que o KWin está usando agora (o único que não pode ser apagado).
+    profile: Option<std::path::PathBuf>,
 }
 
 #[derive(PartialEq, Clone)]
@@ -229,6 +231,7 @@ impl Engine {
                 level: STALE_LEVEL,
                 original: saved.get(&o.name).cloned().unwrap_or_else(ColorState::neutral),
                 saved_mode: None,
+                profile: None,
             });
         }
 
@@ -276,6 +279,7 @@ impl Engine {
 
         struct Pending {
             level: Option<u8>,
+            profile: Option<std::path::PathBuf>,
             original: ColorState,
             saved_mode: Option<Option<String>>,
         }
@@ -290,13 +294,19 @@ impl Engine {
                 .get(&o.name)
                 .map(|t| t.original.clone())
                 .unwrap_or_else(|| o.color.clone());
-            let mut p = Pending { level: None, original: original.clone(), saved_mode: None };
+            let mut p = Pending {
+                level: None,
+                profile: None,
+                original: original.clone(),
+                saved_mode: None,
+            };
 
             if target != cur && o.color_capable {
                 match kscreen::level_args(&o.name, target, &original) {
-                    Ok(a) => {
+                    Ok((a, profile)) => {
                         args.extend(a);
                         p.level = Some(target);
+                        p.profile = profile;
                     }
                     Err(e) => log::error!("perfil ICC de {}: {e:#}", o.name),
                 }
@@ -344,19 +354,21 @@ impl Engine {
                 level: LEVEL_NEUTRAL,
                 original: p.original.clone(),
                 saved_mode: None,
+                profile: None,
             });
             if let Some(l) = p.level {
                 entry.level = l;
+                entry.profile = p.profile.clone();
             }
             if let Some(s) = p.saved_mode {
                 entry.saved_mode = s;
             }
             let (level, has_mode) = (entry.level, entry.saved_mode.is_some());
-            if level <= LEVEL_NEUTRAL {
-                kscreen::cleanup_profiles(&name, None);
-            } else {
-                kscreen::cleanup_profiles(&name, Some(level));
-            }
+            // apaga os perfis antigos, preservando o que o KWin usa agora
+            kscreen::cleanup_profiles(
+                &name,
+                if level <= LEVEL_NEUTRAL { None } else { entry.profile.as_deref() },
+            );
             if level <= LEVEL_NEUTRAL && !has_mode {
                 self.touched.remove(&name);
             }

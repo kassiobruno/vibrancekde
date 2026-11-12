@@ -10,6 +10,14 @@ Reproduz o que o vibrance-kde usa do kscreen-doctor real:
   output.<nome>.mode.<id ou LxA@Hz>
 
 A divisão por '.' e a reconstrução do caminho do iccprofile imitam o doctor.cpp.
+
+Regra do KWin que este fake reproduz (verificada no código-fonte do KWin/libkscreen):
+  * o perfil ICC só é carregado do disco quando o CAMINHO MUDA (o kscreen-doctor só
+    envia set_icc_profile_path se o caminho for diferente do atual);
+  * com fonte ICC mas sem perfil carregado, nada é aplicado (cor padrão);
+  * ao reiniciar a sessão o KWin tenta recarregar o caminho salvo; se o arquivo já
+    foi apagado, fica sem perfil carregado ("loaded": false).
+O campo "effective" do estado diz se a saturação está realmente ativa.
 O estado fica em $FAKE_KSCREEN_DIR/state.json e cada chamada em calls.log.
 """
 import json
@@ -32,7 +40,8 @@ def default_state():
     def out(i, name, prio):
         return {"id": i, "name": name, "enabled": True, "connected": True, "priority": prio,
                 "currentModeId": "1", "modes": modes(), "iccProfilePath": "",
-                "source": "sRGB", "power": "prefer efficiency and performance"}
+                "source": "sRGB", "power": "prefer efficiency and performance",
+                "loaded": False}
 
     return {"outputs": [out(1, "DP-1", 1), out(2, "HDMI-A-1", 2)]}
 
@@ -94,7 +103,10 @@ def main():
             if head[36:40] != b"acsp":
                 print("não é um perfil ICC", file=sys.stderr)
                 return 5
-            o["iccProfilePath"] = path
+            # só carrega se o caminho mudou, como o kscreen-doctor/KWin reais
+            if path != o["iccProfilePath"]:
+                o["iccProfilePath"] = path
+                o["loaded"] = True
         elif sub == "colorProfileSource" and len(ops) >= 4:
             if ops[3] not in ("sRGB", "ICC", "EDID"):
                 return 6

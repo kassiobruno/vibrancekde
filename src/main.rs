@@ -58,9 +58,9 @@ async fn cmd_set(output: &str, level: u8) -> Result<()> {
         .iter()
         .find(|o| o.name == output)
         .with_context(|| format!("monitor '{output}' não encontrado (use list-outputs)"))?;
-    let args = kscreen::level_args(&out.name, level, &out.color)?;
+    let (args, profile) = kscreen::level_args(&out.name, level, &out.color)?;
     kscreen::apply(args).await?;
-    kscreen::cleanup_profiles(&out.name, (level > LEVEL_NEUTRAL).then_some(level));
+    kscreen::cleanup_profiles(&out.name, profile.as_deref());
     println!("{output}: nível {level}% aplicado");
     Ok(())
 }
